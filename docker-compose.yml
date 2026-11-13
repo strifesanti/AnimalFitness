@@ -1,0 +1,64 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: animalfitness-sql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-AnimalFitness_Dev1!}
+    ports:
+      - "1433:1433"
+    volumes:
+      - animalfitness_sql:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/1433' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/src/AnimalFitness.API/Dockerfile
+    container_name: animalfitness-api
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      Database__Provider: SqlServer
+      ConnectionStrings__AnimalFitness: "Server=sqlserver,1433;Database=AnimalFitness;User Id=sa;Password=${MSSQL_SA_PASSWORD:-AnimalFitness_Dev1!};TrustServerCertificate=True;Encrypt=False"
+      Seed__Enabled: "true"
+      Seed__SuperAdmin__Email: ${SEED_SUPERADMIN_EMAIL:-superadmin@animalfitness.local}
+      Seed__SuperAdmin__Password: ${SEED_SUPERADMIN_PASSWORD:-SuperAdmin_Dev1!}
+      Seed__SuperAdmin__FirstName: Super
+      Seed__SuperAdmin__LastName: Admin
+      TenantResolution__BaseDomain: ""
+    ports:
+      - "5080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        API_ORIGIN: http://api:8080
+    container_name: animalfitness-web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_ORIGIN: http://api:8080
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+
+volumes:
+  animalfitness_sql:
