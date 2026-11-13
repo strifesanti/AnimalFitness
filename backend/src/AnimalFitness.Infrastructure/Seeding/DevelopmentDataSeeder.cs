@@ -1,6 +1,8 @@
 using AnimalFitness.Domain.Accounts;
+using AnimalFitness.Domain.Attendance;
 using AnimalFitness.Domain.Organizations;
 using AnimalFitness.Domain.Profiles;
+using AnimalFitness.Domain.Tracking;
 using AnimalFitness.Domain.Training;
 using AnimalFitness.Infrastructure.Persistence;
 using AnimalFitness.Infrastructure.Persistence.Identity;
@@ -54,6 +56,7 @@ public static class DevelopmentDataSeeder
 
         await EnsureSuperAdminAsync(configuration, userManager, db, logger, cancellationToken);
         await EnsureDemoTenantsAsync(db, userManager, logger, cancellationToken);
+        await EnsureHistoricalDemoRosterAsync(db, userManager, logger, cancellationToken);
     }
 
     private static async Task EnsureSqliteSchemaAsync(
@@ -194,6 +197,209 @@ public static class DevelopmentDataSeeder
 
         await db.SaveChangesAsync(cancellationToken);
         logger.LogInformation("Datos demo de Development creados (academias norte/sur y usuarios owner/trainer/athlete).");
+    }
+
+    /// <summary>
+    /// Usuarios y actividad de los últimos ~6 meses. Idempotente: si ya existe alumno01, no repite.
+    /// Funciona aunque las academias base ya existieran (p. ej. redeploy en Railway).
+    /// </summary>
+    private static async Task EnsureHistoricalDemoRosterAsync(
+        AppDbContext db,
+        UserManager<ApplicationUser> userManager,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        const string markerEmail = "alumno01@demo.animalfitness.test";
+        if (await userManager.FindByEmailAsync(markerEmail) is not null)
+        {
+            return;
+        }
+
+        var tenant = await db.Tenants.AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Slug == "academia-norte", cancellationToken);
+        if (tenant is null)
+        {
+            logger.LogWarning("Roster histórico omitido: no existe academia-norte.");
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var trainerMain = await userManager.FindByEmailAsync("trainer@demo.animalfitness.test");
+        var trainerProfile = await db.TrainerProfiles.IgnoreQueryFilters().AsNoTracking()
+            .FirstOrDefaultAsync(
+                item => item.TenantId == tenant.Id && trainerMain != null && item.UserId == trainerMain.Id,
+                cancellationToken);
+
+        var plan = await db.WorkoutPlans.IgnoreQueryFilters().AsNoTracking()
+            .FirstOrDefaultAsync(
+                item => item.TenantId == tenant.Id && item.Name == "Fuerza base",
+                cancellationToken);
+        var planDay = plan is null
+            ? null
+            : await db.WorkoutDays.IgnoreQueryFilters().AsNoTracking()
+                .FirstOrDefaultAsync(item => item.TenantId == tenant.Id && item.PlanId == plan.Id, cancellationToken);
+
+        var extraTrainers = new (string Email, string First, string Last, int MonthsAgo)[]
+        {
+            ("entrenador02@demo.animalfitness.test", "Laura", "Gómez", 5),
+            ("entrenador03@demo.animalfitness.test", "Carlos", "Ruiz", 3),
+        };
+
+        var athletes = new (string Email, string First, string Last, int MonthsAgo, decimal Height, decimal Weight)[]
+        {
+            ("alumno01@demo.animalfitness.test", "Camila", "Restrepo", 6, 162, 58),
+            ("alumno02@demo.animalfitness.test", "Diego", "Vargas", 5, 178, 82),
+            ("alumno03@demo.animalfitness.test", "Valentina", "Mejía", 5, 165, 61),
+            ("alumno04@demo.animalfitness.test", "Andrés", "Pérez", 4, 175, 76),
+            ("alumno05@demo.animalfitness.test", "Sofía", "Castro", 4, 160, 55),
+            ("alumno06@demo.animalfitness.test", "Julián", "Hoyos", 3, 180, 88),
+            ("alumno07@demo.animalfitness.test", "Mariana", "López", 3, 168, 64),
+            ("alumno08@demo.animalfitness.test", "Felipe", "Ríos", 2, 172, 74),
+            ("alumno09@demo.animalfitness.test", "Isabella", "Duque", 2, 158, 52),
+            ("alumno10@demo.animalfitness.test", "Santiago", "Ortiz", 1, 176, 79),
+            ("alumno11@demo.animalfitness.test", "Paula", "Cardona", 1, 163, 59),
+            ("alumno12@demo.animalfitness.test", "Mateo", "Gil", 0, 181, 85),
+        };
+
+        var createdTrainerProfiles = new List<TrainerProfile>();
+        foreach (var (email, first, last, monthsAgo) in extraTrainers)
+        {
+            var joined = now.AddMonths(-monthsAgo).AddDays(-3);
+            var user = await CreateDemoUserAsync(userManager, db, email, first, last, "TrainerDemo1!", joined);
+            db.TenantMemberships.Add(
+                TenantMembership.Create(tenant.Id, user.Id, MembershipRole.Trainer, joined, null));
+            var profile = TrainerProfile.Create(
+                tenant.Id, user.Id, joined, null, $"{first} {last}", "Funcional, fuerza");
+            db.TrainerProfiles.Add(profile);
+            createdTrainerProfiles.Add(profile);
+        }
+
+        var athleteIndex = 0;
+        foreach (var (email, first, last, monthsAgo, height, weight) in athletes)
+        {
+            var joined = now.AddMonths(-monthsAgo).AddDays(-(athleteIndex % 7));
+            var user = await CreateDemoUserAsync(userManager, db, email, first, last, "AthleteDemo1!", joined);
+            db.TenantMemberships.Add(
+                TenantMembership.Create(tenant.Id, user.Id, MembershipRole.Athlete, joined, null));
+            var athleteProfile = AthleteProfile.Create(
+                tenant.Id, user.Id, joined, null, height, weight, notes: "Alumno demo histórico");
+            db.AthleteProfiles.Add(athleteProfile);
+
+            Guid? coachProfileId = null;
+            if (trainerProfile is not null && athleteIndex % 3 != 2)
+            {
+                coachProfileId = trainerProfile.Id;
+            }
+            else if (createdTrainerProfiles.Count > 0)
+            {
+                coachProfileId = createdTrainerProfiles[athleteIndex % createdTrainerProfiles.Count].Id;
+            }
+            else if (trainerProfile is not null)
+            {
+                coachProfileId = trainerProfile.Id;
+            }
+
+            if (coachProfileId is Guid coachId)
+            {
+                db.TrainerAthletes.Add(
+                    TrainerAthlete.Create(tenant.Id, coachId, athleteProfile.Id, joined.AddDays(1), null));
+            }
+
+            db.AthleteGoals.Add(AthleteGoal.Create(
+                tenant.Id,
+                athleteProfile.Id,
+                athleteIndex % 2 == 0 ? "Mejorar fuerza" : "Bajar grasa",
+                joined.AddDays(2),
+                null,
+                "Meta demo",
+                athleteIndex % 2 == 0 ? 80 : 12,
+                athleteIndex % 2 == 0 ? "kg" : "%"));
+
+            // Mediciones mensuales desde el ingreso.
+            for (var m = monthsAgo; m >= 0; m--)
+            {
+                var measuredAt = now.AddMonths(-m).AddDays(-1);
+                if (measuredAt < joined)
+                {
+                    continue;
+                }
+
+                var drift = (monthsAgo - m) * 0.4m;
+                db.BodyMeasurements.Add(BodyMeasurement.Create(
+                    tenant.Id,
+                    athleteProfile.Id,
+                    measuredAt,
+                    user.Id,
+                    measuredAt,
+                    weightKg: weight - drift,
+                    heightCm: height,
+                    bodyFatPercent: 22 - (drift * 0.3m),
+                    waistCm: 80 - drift));
+            }
+
+            // Asistencia de los últimos ~10 semanas (algunas ausencias).
+            for (var week = 0; week < 10; week++)
+            {
+                var day = DateOnly.FromDateTime(now.AddDays(-(week * 7) - (athleteIndex % 3)).UtcDateTime);
+                var dayInstant = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+                if (dayInstant < joined)
+                {
+                    continue;
+                }
+
+                var status = (week + athleteIndex) % 5 == 0
+                    ? AttendanceStatus.Absent
+                    : (week + athleteIndex) % 7 == 0
+                        ? AttendanceStatus.Late
+                        : AttendanceStatus.Present;
+                db.AttendanceRecords.Add(AttendanceRecord.Create(
+                    tenant.Id,
+                    athleteProfile.Id,
+                    day,
+                    status,
+                    trainerMain?.Id ?? user.Id,
+                    dayInstant));
+            }
+
+            // Sesiones completadas espaciadas.
+            if (plan is not null)
+            {
+                for (var s = 0; s < 4; s++)
+                {
+                    var started = now.AddDays(-(14 * (s + 1)) - athleteIndex).AddHours(17);
+                    if (started < joined)
+                    {
+                        continue;
+                    }
+
+                    var session = WorkoutSession.Start(
+                        tenant.Id,
+                        athleteProfile.Id,
+                        started,
+                        user.Id,
+                        plan.Id,
+                        planDay?.Id,
+                        "Sesión demo");
+                    session.Complete(started.AddMinutes(55), user.Id);
+                    db.WorkoutSessions.Add(session);
+                }
+
+                if (athleteIndex < 8)
+                {
+                    db.WorkoutPlanAssignments.Add(
+                        WorkoutPlanAssignment.Create(
+                            tenant.Id, plan.Id, athleteProfile.Id, joined.AddDays(3), trainerMain?.Id));
+                }
+            }
+
+            athleteIndex++;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Roster histórico demo creado: {Trainers} entrenadores y {Athletes} alumnos (últimos meses).",
+            extraTrainers.Length,
+            athletes.Length);
     }
 
     private static void SeedDemoTraining(

@@ -79,6 +79,10 @@ Solo se crean con `ASPNETCORE_ENVIRONMENT=Development` y `Seed:Enabled=true`.
 | `owner@demo.animalfitness.test` | `OwnerDemo1!` | Owner |
 | `trainer@demo.animalfitness.test` | `TrainerDemo1!` | Trainer |
 | `athlete@demo.animalfitness.test` | `AthleteDemo1!` | Athlete |
+| `entrenador02@demo…` / `entrenador03@demo…` | `TrainerDemo1!` | Trainer (histórico) |
+| `alumno01@demo…` … `alumno12@demo…` | `AthleteDemo1!` | Athlete (histórico, últimos ~6 meses) |
+
+El roster histórico (mediciones, asistencia y sesiones) se carga en `academia-norte` de forma idempotente al arrancar en Development.
 
 ## Pruebas
 
