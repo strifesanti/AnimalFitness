@@ -59,6 +59,17 @@ export default function LoginPage() {
             </p>
           </div>
           <LoginForm />
+          <p className="text-center text-xs text-[var(--muted)]">
+            Desarrollada por:{" "}
+            <a
+              href="https://www.instagram.com/duvn_r07"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--accent-secondary)] underline-offset-2 hover:underline"
+            >
+              Dvuvan Rojas
+            </a>
+          </p>
         </div>
       </section>
     </div>
