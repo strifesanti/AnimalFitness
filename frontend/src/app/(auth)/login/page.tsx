@@ -67,7 +67,7 @@ export default function LoginPage() {
               rel="noopener noreferrer"
               className="text-[var(--accent-secondary)] underline-offset-2 hover:underline"
             >
-              Dvuvan Rojas
+              Duvan Rojas
             </a>
           </p>
         </div>
